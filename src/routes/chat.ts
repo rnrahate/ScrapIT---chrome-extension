@@ -11,11 +11,11 @@ const chatBodySchema = z.object({
     content: z.string().max(4000)
   })).max(20),
   pageContext: z.object({
-    url: z.string().url(),
-    title: z.string().max(300),
-    text: z.string().max(6000),
+    url: z.string(),
+    title: z.string(),
+    text: z.string(),
     truncated: z.boolean()
-  }),
+  }).nullable().optional(),
   client: z.object({
     locale: z.string(),
     version: z.string()

@@ -68,11 +68,22 @@ export async function orchestrate(requestData: any, sse: any) {
       messages.push(...results);
       iterations++;
     } else {
-      let parsed = envelopeSchema.safeParse(JSON.parse(responseMsg.content));
+      let cleanContent = responseMsg.content.trim();
+      if (cleanContent.startsWith('```')) {
+        cleanContent = cleanContent.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+      }
+      
+      let parsed = envelopeSchema.safeParse(JSON.parse(cleanContent));
       if (!parsed.success) {
          messages.push({ role: 'user', content: 'Invalid JSON. Please output strictly according to schema.'});
          const repairMsg = await client.call(messages, toolSchemas);
-         parsed = envelopeSchema.safeParse(JSON.parse(repairMsg.content));
+         
+         let repairClean = repairMsg.content.trim();
+         if (repairClean.startsWith('```')) {
+           repairClean = repairClean.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+         }
+         
+         parsed = envelopeSchema.safeParse(JSON.parse(repairClean));
          if (!parsed.success) {
             parsed = { success: true, data: { type: 'text', content: 'Fallback: I encountered an error producing the response.' } } as any;
          }
@@ -82,7 +93,12 @@ export async function orchestrate(requestData: any, sse: any) {
         if (parsed.data.type === 'text') {
            sse.send('delta', { text: parsed.data.content });
         } else if (parsed.data.type === 'widget_render') {
-           const storedResult = activeToolResults.get(parsed.data.result_id);
+           let storedResult = activeToolResults.get(parsed.data.result_id);
+           if (!storedResult && activeToolResults.size > 0) {
+               // If the small model hallucinated the ID from the prompt example, fallback to the first result
+               storedResult = Array.from(activeToolResults.values())[0];
+           }
+           
            if (!storedResult) {
                sse.send('delta', { text: parsed.data.fallback_text });
            } else {
