@@ -1,0 +1,499 @@
+/* ────────────────────────────────────────────────────────────────
+ * drawer.css
+ * Styles for the Shadow-DOM-isolated in-page drawer and FAB.
+ *
+ * Applied via adoptedStyleSheets (CSSStyleSheet.replaceSync) so this
+ * file does NOT need to be in web_accessible_resources when loaded by
+ * the background worker and forwarded to the content script.
+ *
+ * `all: initial` on the host container resets inherited page styles.
+ * CSS custom properties enable prefers-color-scheme theming.
+ * ──────────────────────────────────────────────────────────────── */
+
+/* ── THEME TOKENS ─────────────────────────────────────────────── */
+
+:host {
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--gwc-text-primary);
+  --gwc-bg-primary: #ffffff;
+  --gwc-bg-secondary: #f7f7f8;
+  --gwc-bg-tertiary: #eeeef0;
+  --gwc-text-primary: #1a1a2e;
+  --gwc-text-secondary: #64648c;
+  --gwc-text-muted: #9999b3;
+  --gwc-accent: #6366f1;
+  --gwc-accent-hover: #4f46e5;
+  --gwc-accent-text: #ffffff;
+  --gwc-user-bubble: #6366f1;
+  --gwc-user-text: #ffffff;
+  --gwc-assistant-bubble: #f0f0f5;
+  --gwc-assistant-text: #1a1a2e;
+  --gwc-border: #e2e2ea;
+  --gwc-error: #ef4444;
+  --gwc-error-bg: #fef2f2;
+  --gwc-success: #22c55e;
+  --gwc-warning: #f59e0b;
+  --gwc-shadow: 0 8px 32px rgba(0,0,0,0.12);
+  --gwc-radius-sm: 4px;
+  --gwc-radius-md: 8px;
+  --gwc-radius-lg: 12px;
+  --gwc-radius-pill: 999px;
+  --gwc-transition: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :host {
+    --gwc-bg-primary: #1a1a2e;
+    --gwc-bg-secondary: #16213e;
+    --gwc-bg-tertiary: #1e2a4a;
+    --gwc-text-primary: #e8e8f0;
+    --gwc-text-secondary: #a0a0c0;
+    --gwc-text-muted: #6a6a8e;
+    --gwc-accent: #818cf8;
+    --gwc-accent-hover: #6366f1;
+    --gwc-user-bubble: #4f46e5;
+    --gwc-user-text: #f0f0ff;
+    --gwc-assistant-bubble: #1e1e3f;
+    --gwc-assistant-text: #e0e0f0;
+    --gwc-border: #2a2a4a;
+    --gwc-error: #f87171;
+    --gwc-error-bg: #2a1515;
+    --gwc-success: #4ade80;
+    --gwc-warning: #fbbf24;
+    --gwc-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host,
+  :host * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── FAB ──────────────────────────────────────────────────────── */
+
+.gwc-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  /* Max z-index: 2^31 - 1.  We use the maximum 32-bit signed integer
+     (2147483647) so the FAB sits above virtually every page element,
+     including aggressive overlays.  Using lower values like 999999
+     risks being eclipsed by sites that use very high z-indexes. */
+  z-index: 2147483647;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--gwc-accent), #a855f7);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
+  transition: transform var(--gwc-transition), box-shadow var(--gwc-transition);
+  outline: none;
+}
+
+.gwc-fab:hover {
+  transform: scale(1.08);
+  box-shadow: 0 6px 24px rgba(99, 102, 241, 0.5);
+}
+
+.gwc-fab:focus-visible {
+  outline: 3px solid var(--gwc-accent);
+  outline-offset: 3px;
+}
+
+.gwc-fab-icon {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+/* ── DRAWER ───────────────────────────────────────────────────── */
+
+.gwc-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--gwc-transition);
+}
+
+.gwc-drawer-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gwc-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2147483647;
+  width: 30vw;
+  min-width: 320px;
+  max-width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--gwc-bg-primary);
+  box-shadow: var(--gwc-shadow);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--gwc-transition);
+}
+
+.gwc-drawer.open {
+  transform: translateX(0);
+}
+
+/* ── DRAWER HEADER ────────────────────────────────────────────── */
+
+.gwc-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--gwc-border);
+  flex-shrink: 0;
+}
+
+.gwc-drawer-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gwc-text-primary);
+  flex: 1;
+  margin: 0;
+}
+
+.gwc-status-chip {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--gwc-radius-pill);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gwc-status-chip.local { background: #dcfce7; color: #166534; }
+.gwc-status-chip.cloud { background: #dbeafe; color: #1e40af; }
+.gwc-status-chip.error { background: var(--gwc-error-bg); color: var(--gwc-error); }
+
+@media (prefers-color-scheme: dark) {
+  .gwc-status-chip.local { background: #14532d; color: #86efac; }
+  .gwc-status-chip.cloud { background: #1e3a5f; color: #93c5fd; }
+}
+
+.gwc-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--gwc-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gwc-text-secondary);
+  font-size: 18px;
+  transition: background var(--gwc-transition);
+}
+
+.gwc-close-btn:hover { background: var(--gwc-bg-tertiary); }
+.gwc-close-btn:focus-visible { outline: 2px solid var(--gwc-accent); outline-offset: 1px; }
+
+/* ── MESSAGE LIST ─────────────────────────────────────────────── */
+
+.gwc-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gwc-bg-tertiary) transparent;
+}
+
+.gwc-msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: var(--gwc-radius-lg);
+  font-size: 13.5px;
+  line-height: 1.55;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.gwc-msg-user {
+  align-self: flex-end;
+  background: var(--gwc-user-bubble);
+  color: var(--gwc-user-text);
+  border-bottom-right-radius: var(--gwc-radius-sm);
+}
+
+.gwc-msg-assistant {
+  align-self: flex-start;
+  background: var(--gwc-assistant-bubble);
+  color: var(--gwc-assistant-text);
+  border-bottom-left-radius: var(--gwc-radius-sm);
+}
+
+/* ── SKELETON LOADER ──────────────────────────────────────────── */
+
+.gwc-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  align-self: flex-start;
+}
+
+.gwc-skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--gwc-bg-tertiary) 25%, var(--gwc-bg-secondary) 50%, var(--gwc-bg-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: gwc-shimmer 1.5s ease-in-out infinite;
+}
+
+.gwc-skeleton-line:nth-child(1) { width: 80%; }
+.gwc-skeleton-line:nth-child(2) { width: 60%; }
+.gwc-skeleton-line:nth-child(3) { width: 45%; }
+
+@keyframes gwc-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── QUICK ACTIONS ────────────────────────────────────────────── */
+
+.gwc-quick-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px;
+  flex-shrink: 0;
+}
+
+.gwc-quick-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--gwc-border);
+  border-radius: var(--gwc-radius-pill);
+  background: var(--gwc-bg-secondary);
+  color: var(--gwc-text-primary);
+  cursor: pointer;
+  transition: background var(--gwc-transition), border-color var(--gwc-transition);
+  white-space: nowrap;
+}
+
+.gwc-quick-btn:hover {
+  background: var(--gwc-accent);
+  color: var(--gwc-accent-text);
+  border-color: var(--gwc-accent);
+}
+
+.gwc-quick-btn:focus-visible { outline: 2px solid var(--gwc-accent); outline-offset: 1px; }
+
+/* ── INPUT BAR ────────────────────────────────────────────────── */
+
+.gwc-input-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--gwc-border);
+  background: var(--gwc-bg-primary);
+  flex-shrink: 0;
+}
+
+.gwc-textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--gwc-border);
+  border-radius: var(--gwc-radius-md);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.4;
+  background: var(--gwc-bg-secondary);
+  color: var(--gwc-text-primary);
+  max-height: 100px;
+  overflow-y: auto;
+  outline: none;
+  transition: border-color var(--gwc-transition);
+}
+
+.gwc-textarea:focus {
+  border-color: var(--gwc-accent);
+}
+
+.gwc-textarea::placeholder {
+  color: var(--gwc-text-muted);
+}
+
+.gwc-send-btn,
+.gwc-stop-btn {
+  height: 36px;
+  min-width: 36px;
+  border: none;
+  border-radius: var(--gwc-radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 12px;
+  transition: background var(--gwc-transition);
+}
+
+.gwc-send-btn {
+  background: var(--gwc-accent);
+  color: var(--gwc-accent-text);
+}
+
+.gwc-send-btn:hover { background: var(--gwc-accent-hover); }
+.gwc-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.gwc-stop-btn {
+  background: var(--gwc-error);
+  color: #fff;
+}
+
+.gwc-stop-btn:hover { background: #dc2626; }
+
+/* ── WIDGET CARDS ─────────────────────────────────────────────── */
+
+.widget-card {
+  border: 1px solid var(--gwc-border);
+  border-radius: var(--gwc-radius-md);
+  padding: 12px;
+  background: var(--gwc-bg-secondary);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 4px 0;
+}
+
+.widget-card-icon { font-size: 24px; flex-shrink: 0; }
+
+.widget-card-body { flex: 1; min-width: 0; }
+
+.widget-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gwc-text-primary);
+}
+
+.widget-card-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.widget-card-subtitle,
+.widget-card-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--gwc-text-secondary);
+}
+
+.widget-card-hostname {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--gwc-text-muted);
+}
+
+.widget-card-description {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--gwc-text-secondary);
+}
+
+.widget-card-action {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--gwc-accent);
+  text-decoration: none;
+  transition: color var(--gwc-transition);
+}
+
+.widget-card-action:hover { color: var(--gwc-accent-hover); text-decoration: underline; }
+
+.widget-badge-verified {
+  font-size: 11px;
+  color: var(--gwc-success);
+  font-weight: 600;
+}
+
+.widget-fallback {
+  font-size: 13px;
+  color: var(--gwc-text-secondary);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+/* ── ERROR BANNER ─────────────────────────────────────────────── */
+
+.gwc-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--gwc-error-bg);
+  border: 1px solid var(--gwc-error);
+  border-radius: var(--gwc-radius-md);
+  color: var(--gwc-error);
+  font-size: 12.5px;
+  margin: 8px 0;
+}
+
+.gwc-error-banner-text { flex: 1; }
+
+.gwc-error-banner-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--gwc-error);
+  border-radius: var(--gwc-radius-sm);
+  background: transparent;
+  color: var(--gwc-error);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--gwc-transition);
+}
+
+.gwc-error-banner-btn:hover { background: var(--gwc-error); color: #fff; }
+
+/* ── CACHE LABEL ──────────────────────────────────────────────── */
+
+.gwc-cached-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--gwc-text-muted);
+  padding: 2px 0;
+}
+
+.gwc-refresh-btn {
+  font-size: 11px;
+  color: var(--gwc-accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
