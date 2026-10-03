@@ -1,428 +1,268 @@
 # Gemma Web Companion
 
-A hybrid AI webpage assistant for Chrome (Manifest V3). Everyday questions and page summaries run on a **local Gemma 4 Edge** model (free, private, low latency). Requests that need live web search, verified links, or maps are routed to a **cloud Gemma 4** agent (26B MoE / 31B Dense) that calls tools and returns structured, hallucination-resistant widgets.
-
-- **Frontend:** Chrome extension (popup + in-page Shadow DOM chat drawer)
-- **Backend:** Node.js/TypeScript agent server with tool calling and SSE streaming
-
-> Model identifiers are never hard-coded. Set whatever Gemma 4 tags your Ollama install and your cloud provider actually expose (see [Configuration](#configuration)).
+A hybrid AI webpage assistant Chrome extension powered by **local Gemma models** (via [Ollama](https://ollama.com)) with optional **cloud API fallback**. Summarize, query, and interact with any web page using on-device or cloud AI — your data stays local whenever possible.
 
 ---
 
-## Table of contents
+## Installation
 
-1. [How it works](#how-it-works)
-2. [Repository layout](#repository-layout)
-3. [Prerequisites](#prerequisites)
-4. [Quick start](#quick-start)
-5. [Configuration](#configuration)
-6. [API contract](#api-contract)
-7. [Routing rules](#routing-rules)
-8. [Permissions](#permissions)
-9. [Security model](#security-model)
-10. [Privacy and data flow](#privacy-and-data-flow)
-11. [Testing](#testing)
-12. [Troubleshooting](#troubleshooting)
-13. [Chrome Web Store checklist](#chrome-web-store-checklist)
-14. [Roadmap](#roadmap)
-15. [License](#license)
+### 1. Load the Extension
 
----
+1. Open Chrome and navigate to `chrome://extensions`
+2. Enable **Developer mode** (toggle in the top-right corner)
+3. Click **Load unpacked** and select the root directory of this project
+4. The Gemma Companion icon appears in your toolbar
 
-## How it works
+### 2. Install & Configure Ollama
 
-```
- ┌───────────────────────────── Chrome ─────────────────────────────┐
- │                                                                  │
- │  content.js (closed Shadow DOM)        popup.html / popup.js     │
- │  FAB + sliding chat drawer             Summarize + chat + widgets│
- │            │                                   │                 │
- │            └──────── chrome.runtime port ──────┘                 │
- │                              │                                   │
- │                     background.js (service worker)               │
- │              owns ALL network I/O, parsing, abort, retries       │
- └──────────────┬───────────────────────────────┬───────────────────┘
-                │ local route                   │ cloud route
-                ▼                               ▼
-     Ollama @ localhost:11434          Cloud agent server  /v1/chat (SSE)
-     Gemma 4 Edge (NDJSON stream)      ├─ Gemma 4 26B/31B (tool calling)
-                                       ├─ lookup_location_map → GeoProvider
-                                       └─ fetch_verified_link → SearchProvider
-```
+1. Download and install [Ollama](https://ollama.com/download)
+2. Pull the default model:
+   ```bash
+   ollama pull gemma3:4b
+   ```
+3. **Set OLLAMA_ORIGINS** so the extension can communicate with Ollama:
+   ```bash
+   # macOS / Linux
+   export OLLAMA_ORIGINS="chrome-extension://*"
+   ollama serve
 
-Key design decisions:
+   # Windows (PowerShell)
+   $env:OLLAMA_ORIGINS="chrome-extension://*"
+   ollama serve
+   ```
+   Alternatively, add `OLLAMA_ORIGINS=chrome-extension://*` to your system environment variables so it persists across restarts.
 
-- **All network calls go through the service worker.** Content scripts run under the host page's origin, so calling `http://localhost` from an HTTPS page would hit mixed-content and CORS blocks.
-- **Two stream formats, one interface.** Ollama streams NDJSON; the cloud server streams SSE. Both are normalized to `delta | widget | done | error` events.
-- **Widgets are built server-side from tool results.** The model can only reference a tool result by id. It can never author a URL, address, or coordinate that reaches the UI.
-- **No `eval`, no `innerHTML`, no remote code.** All DOM is built with `createElement` and `textContent`; model output is treated as untrusted text.
+4. Verify Ollama is running:
+   ```bash
+   curl http://localhost:11434/api/tags
+   ```
 
----
+### 3. Cloud API (Optional)
 
-## Repository layout
+If you want cloud fallback when Ollama is unavailable:
 
-```
-gemma-web-companion/
-├── extension/
-│   ├── manifest.json
-│   ├── background.js              # service worker: routing, fetch, streaming, abort
-│   ├── content.js                 # scraper, FAB, Shadow DOM drawer
-│   ├── popup.html
-│   ├── popup.css
-│   ├── popup.js
-│   ├── assets/                    # icons
-│   ├── src/
-│   │   ├── core/
-│   │   │   ├── config.js          # endpoints, limits, timeouts
-│   │   │   ├── router.js          # pure regex intent router
-│   │   │   ├── scraper.js         # DOM cleaning + 6,000-char chunker
-│   │   │   ├── stream-parsers.js  # NDJSON + SSE parsers
-│   │   │   ├── cache.js           # chrome.storage.local summary cache
-│   │   │   └── health.js          # local runtime health check
-│   │   └── ui/
-│   │       ├── dom.js             # safe element builder (no innerHTML)
-│   │       ├── widgets.js         # map + link-card renderers
-│   │       └── chat-controller.js # shared chat logic (popup + drawer)
-│   └── tests/
-│       └── router.test.js
-└── server/
-    ├── src/
-    │   ├── server.ts
-    │   ├── config.ts
-    │   ├── routes/chat.ts
-    │   ├── agent/                 # orchestrator, system prompt, output schema
-    │   ├── tools/                 # lookupLocationMap, fetchVerifiedLink, registry
-    │   ├── providers/             # model, search, geo (swappable)
-    │   ├── security/              # auth, rate-limit, url-policy, injection-guard
-    │   ├── streaming/sse.ts
-    │   └── observability/
-    ├── tests/
-    ├── Dockerfile
-    ├── docker-compose.yml
-    └── .env.example
-```
-
----
-
-## Prerequisites
-
-| Component | Requirement |
-|---|---|
-| Browser | Chrome 116+ (or any Chromium browser with MV3 support) |
-| Local model | [Ollama](https://ollama.com/download) with a Gemma 4 Edge model pulled |
-| Backend | Node.js 20+, npm 10+ (or Docker) |
-| Search API key | Brave Search or Tavily (for `fetch_verified_link`) |
-| Geocoding | OpenStreetMap Nominatim (no key) or Google Geocoding (key) |
-| Cloud model access | An endpoint serving Gemma 4 26B MoE or 31B Dense |
-
----
-
-## Quick start
-
-### 1. Set up the local model (Ollama)
-
-Install Ollama, then pull your Gemma 4 Edge model:
-
-```bash
-ollama pull <your-gemma-4-edge-tag>
-ollama list    # confirm the tag appears
-```
-
-Allow the extension to call Ollama by setting `OLLAMA_ORIGINS`, then restart Ollama:
-
-```bash
-# macOS
-launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"
-# then quit and reopen the Ollama app
-
-# Linux (systemd): add under [Service] via `systemctl edit ollama`
-Environment="OLLAMA_ORIGINS=chrome-extension://*"
-# then: sudo systemctl daemon-reload && sudo systemctl restart ollama
-
-# Windows (PowerShell), then restart Ollama
-setx OLLAMA_ORIGINS "chrome-extension://*"
-```
-
-Verify:
-
-```bash
-curl http://localhost:11434/api/tags
-```
-
-### 2. Start the cloud agent server
-
-```bash
-cd server
-cp .env.example .env      # fill in values, see Configuration
-npm install
-npm run dev               # or: npm run build && npm start
-```
-
-Docker alternative:
-
-```bash
-cd server
-docker compose up --build
-```
-
-Smoke test the SSE stream:
-
-```bash
-curl -N http://localhost:8787/v1/chat \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sessionId": "dev-1",
-    "messages": [{"role":"user","content":"Find the official website for Blue Tokai Coffee"}],
-    "pageContext": {"url":"https://example.com","title":"Example","text":"Example page","truncated":false},
-    "client": {"locale":"en-IN","version":"0.1.0"}
-  }'
-```
-
-You should see `delta`, `widget`, and `done` events arrive incrementally.
-
-### 3. Load the extension
-
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked** and select the `extension/` folder.
-4. Copy the extension ID shown on the card. Add it to the server's `ALLOWED_EXTENSION_IDS`.
-5. Open the extension's options (or popup settings) and enter your **cloud base URL** and **API token**.
-6. Pin the extension, open any article, and click **Summarize**, or use the floating button at the bottom-right of the page.
+1. Set your cloud API base URL and API key in the extension's settings (via `chrome.storage.sync`)
+2. The extension will automatically fall back to the cloud if the local runtime is down (configurable via `AUTO_CLOUD_FALLBACK`)
 
 ---
 
 ## Configuration
 
-### Server (`server/.env`)
+All configuration is in [`src/core/config.js`](src/core/config.js) with sensible defaults. Override any value via `chrome.storage.sync` under the `config` key:
 
-| Variable | Required | Description |
-|---|---|---|
-| `PORT` | no | HTTP port (default `8787`) |
-| `API_TOKENS_HASHED` | yes | Comma-separated SHA-256 hashes of accepted bearer tokens |
-| `ALLOWED_EXTENSION_IDS` | yes | Comma-separated extension IDs allowed by CORS/origin check |
-| `MODEL_BASE_URL` | yes | Base URL of the Gemma 4 endpoint (OpenAI-compatible or provider-native) |
-| `MODEL_NAME` | yes | Cloud model identifier (26B MoE or 31B Dense) |
-| `MODEL_API_KEY` | yes | Credential for the model endpoint |
-| `SEARCH_PROVIDER` | yes | `brave` or `tavily` |
-| `SEARCH_API_KEY` | yes | Search provider key |
-| `GEO_PROVIDER` | no | `nominatim` (default) or `google` |
-| `GEO_API_KEY` | if google | Google Geocoding key |
-| `NOMINATIM_USER_AGENT` | if nominatim | Identifying User-Agent per Nominatim usage policy |
-| `MAX_TOOL_ITERATIONS` | no | Tool loop cap (default `4`) |
-| `REQUEST_BUDGET_MS` | no | Wall-clock budget per request (default `45000`) |
-| `TOOL_TIMEOUT_MS` | no | Per-tool timeout (default `8000`) |
-| `RATE_LIMIT_PER_MIN` | no | Per-token request cap |
-| `LOG_LEVEL` | no | `info` (default), `debug`, `warn` |
-
-Generate a token hash:
-
-```bash
-TOKEN=$(openssl rand -hex 32); echo "token: $TOKEN"; printf '%s' "$TOKEN" | sha256sum
-```
-
-### Extension (stored in `chrome.storage`)
-
-| Setting | Default | Description |
-|---|---|---|
-| Local model tag | _(empty)_ | The Ollama tag for Gemma 4 Edge |
-| Local endpoint | `http://localhost:11434` | Ollama base URL |
-| Cloud base URL | _(empty)_ | Your deployed server |
-| Cloud API token | _(empty)_ | Stored in `chrome.storage.local` |
-| Fallback to cloud when local is down | on | Otherwise show the download prompt |
-| Max page context | 6,000 chars | Hard cap enforced by the chunker |
-| Cache TTL | 24 h | Summary cache lifetime (max 50 entries) |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `LOCAL_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
+| `CLOUD_BASE_URL` | `""` | Cloud API base URL (empty = disabled) |
+| `GEMMA_MODEL_TAG` | `gemma3:4b` | Ollama model tag to use |
+| `MAX_CONTEXT_CHARS` | `6000` | Max page content characters sent to the model |
+| `NUM_CTX` | `4096` | Context window size for Ollama |
+| `AUTO_CLOUD_FALLBACK` | `true` | Auto-switch to cloud when local is unavailable |
+| `ON_DEMAND_INJECTION` | `false` | Config flag for on-demand content script injection (see below) |
+| `CACHE_TTL_MS` | `86400000` | Summary cache TTL (24 hours) |
+| `CACHE_MAX_ENTRIES` | `50` | Max cached summaries |
 
 ---
 
-## API contract
+## Architecture
 
-### `POST /v1/chat`
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      POPUP / CONTENT SCRIPT                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │   dom.js     │  │  widgets.js  │  │ chat-controller.js│  │
+│  │ (safe DOM)   │  │ (renderers)  │  │ (port + typewriter)│ │
+│  └──────────────┘  └──────────────┘  └────────┬─────────┘  │
+│                                                │  port      │
+├────────────────────────────────────────────────┼────────────┤
+│                   SERVICE WORKER               │            │
+│  ┌──────────┐ ┌────────┐ ┌──────────────────┐ │            │
+│  │ router.js│ │health.js│ │ stream-parsers.js│ │            │
+│  └──────────┘ └────────┘ └──────────────────┘ │            │
+│  ┌──────────┐ ┌────────┐                      │            │
+│  │ config.js│ │cache.js │     background.js ◄──┘            │
+│  └──────────┘ └────────┘     (ALL network I/O)              │
+└─────────────────────────────────────────────────────────────┘
+          │                        │
+          │ fetch (local)          │ fetch (cloud)
+          ▼                        ▼
+   ┌─────────────┐        ┌──────────────┐
+   │   Ollama    │        │  Cloud API   │
+   │ localhost:  │        │  /v1/chat    │
+   │ 11434      │        │  (SSE)       │
+   └─────────────┘        └──────────────┘
+```
 
-**Headers:** `Authorization: Bearer <token>`, `Content-Type: application/json`
+### Key Design Decisions
 
-**Request body**
+- **Network isolation**: Content script and popup **never** call `fetch` directly. All I/O goes through the service worker via `chrome.runtime.connect` (streaming) or `chrome.runtime.sendMessage` (RPC).
+- **Service worker keepalive**: Open ports keep the MV3 worker alive. A 20-second heartbeat message provides an extra safety net (Chrome's idle timeout is 30s).
+- **Shadow DOM isolation**: The in-page drawer uses `attachShadow({mode: 'closed'})` with `all: initial` to prevent host-page CSS from leaking in.
+- **Prompt injection mitigation**: Page content is wrapped in `<page_context>` tags with explicit instructions to the model to treat it as untrusted data.
+
+---
+
+## Permission Justification
+
+| Permission | Why Needed |
+|------------|------------|
+| `activeTab` | Required to access the active tab's URL and send messages to the content script for scraping page content. Only activates when the user clicks the extension icon or interacts with the drawer. |
+| `scripting` | Used for on-demand content script injection when `ON_DEMAND_INJECTION` is enabled, as an alternative to the `<all_urls>` content script declaration. |
+| `storage` | Stores user configuration (`chrome.storage.sync`), cloud API keys (`chrome.storage.local`), and the summary cache (`chrome.storage.local`) with TTL-based eviction. |
+| `host_permissions: localhost:11434` | Required for the service worker to make cross-origin requests to the local Ollama API, which doesn't serve CORS headers. |
+| `optional_host_permissions: https://*/*` | Requested at runtime when the user configures a cloud API endpoint, granting fetch access to that specific origin. |
+
+---
+
+## Content Script Injection: `<all_urls>` vs On-Demand
+
+The default configuration uses a manifest-declared content script matching `<all_urls>`, which triggers a **broad host permission warning** at install ("Read and change all your data on all websites"). This is the simplest approach and provides the best UX (the FAB is always visible).
+
+**Alternative: On-Demand Injection** (`ON_DEMAND_INJECTION: true`)
+
+Set this config flag to skip the manifest content script and instead inject on click via `chrome.scripting.executeScript` from the service worker after the user clicks the extension icon. Benefits:
+- No broad host permission warning at install
+- Content script only runs on pages where the user explicitly activates the extension
+
+Trade-off: The FAB won't be visible until the user clicks the extension icon.
+
+---
+
+## Web Accessible Resources & Fingerprinting
+
+Files listed in `web_accessible_resources` can be probed by any web page to detect whether this extension is installed (fingerprinting). We list only the files strictly needed by the content script's dynamic imports:
+
+- `src/ui/dom.js`, `src/ui/widgets.js`, `src/ui/chat-controller.js` — shared logic
+- `src/core/scraper.js`, `src/core/config.js` — page extraction
+- `src/ui/drawer.css` — shadow DOM styling (loaded via `fetch` + `adoptedStyleSheets` rather than a `<link>` tag to minimize exposure surface)
+
+**Mitigation**: CSS is loaded via `fetch()` inside the shadow root and applied through `CSSStyleSheet.replaceSync()` / `adoptedStyleSheets`, so no `<link>` element pointing to a detectable extension URL is inserted into the page DOM. The CSS file is listed in `web_accessible_resources` as a fallback; the primary loading path uses the background worker as a CSS proxy (`get-css` RPC).
+
+---
+
+## Cloud API Contract
+
+### Request — `POST /v1/chat`
 
 ```json
 {
-  "sessionId": "string (<=64)",
-  "messages": [{ "role": "user | assistant", "content": "string (<=4000)" }],
+  "sessionId": "uuid-string",
+  "messages": [
+    { "role": "user", "content": "Summarize this page" }
+  ],
   "pageContext": {
-    "url": "https://...",
-    "title": "string (<=300)",
-    "text": "string (<=6000)",
+    "url": "https://example.com/article",
+    "title": "Example Article",
+    "text": "...(≤6000 chars)...",
     "truncated": false
   },
-  "client": { "locale": "en-IN", "version": "0.1.0" }
+  "client": {
+    "locale": "en-US",
+    "version": "1.0.0"
+  }
 }
 ```
 
-**Response:** `text/event-stream`
+### Response — `text/event-stream`
 
-| Event | Data |
-|---|---|
-| `delta` | `{"text": "..."}` |
-| `widget` | `{"type":"widget_render","widget":"map\|link_card","payload":{...},"fallback_text":"..."}` |
-| `done` | `{"usage":{"input_tokens":0,"output_tokens":0,"tool_calls":0}}` |
-| `error` | `{"code":"...","message":"..."}` |
+```
+event: delta
+data: {"text": "Here is "}
 
-**Widget payloads**
+event: delta
+data: {"text": "a summary."}
 
-```json
-// map
-{ "name": "", "address": "", "lat": 0, "lng": 0, "osm_url": "" }
+event: widget
+data: {"type":"widget_render","widget":"map","payload":{"name":"Eiffel Tower","address":"Paris, France","lat":48.8584,"lng":2.2945,"osm_url":"https://..."},"fallback_text":"Eiffel Tower, Paris"}
 
-// link_card
-{ "title": "", "url": "", "hostname": "", "description": "", "verified": true }
+event: done
+data: {"usage":{"promptTokens":120,"completionTokens":85}}
 ```
 
-**Model output envelope** (validated server-side; the client never sees raw model JSON)
+### Widget Payloads
 
-```json
-{ "type": "text", "content": "..." }
-{ "type": "widget_render", "widget": "map", "result_id": "r_1", "fallback_text": "..." }
+| Widget | Payload Fields |
+|--------|---------------|
+| `map` | `name`, `address`, `lat`, `lng`, `osm_url` |
+| `link_card` | `title`, `url`, `hostname`, `description`, `verified` |
+
+---
+
+## Chrome Web Store Compliance Checklist
+
+| Requirement | Status | Notes |
+|-------------|--------|-------|
+| **Single purpose** | ✅ | AI-powered webpage assistant — summarize, query, and interact with page content |
+| **Minimum permissions** | ✅ | Only `activeTab`, `scripting`, `storage`. No `tabs`, `webNavigation`, `history`, etc. |
+| **No remote code execution** | ✅ | `script-src 'self'`; no CDN scripts, no `eval()`, no `new Function()`, no inline scripts |
+| **Data use disclosure** | ✅ | See below |
+| **No deceptive behavior** | ✅ | Extension clearly states when cloud API is used; status chip shows LOCAL vs CLOUD |
+| **Privacy policy** | ⬜ | Required before submission — document what data is sent and when |
+
+### Data Use Disclosure
+
+| Data | Leaves Device? | When | Destination |
+|------|----------------|------|-------------|
+| Page text (≤6000 chars) | **Only if cloud route** | When a cloud-routed query is sent, or local fallback triggers | Configured cloud API endpoint |
+| User query text | **Only if cloud route** | Same as above | Configured cloud API endpoint |
+| Page text (full) | **Never** (local only) | When a local-routed query is sent | Ollama on `localhost:11434` |
+| API key | **Yes** (cloud only) | In the `Authorization` header of cloud requests | Configured cloud API endpoint |
+| Extension config | **Never** | Stored in `chrome.storage.sync` | Chrome sync infrastructure only |
+| Summary cache | **Never** | Stored in `chrome.storage.local` | Stays on device |
+
+---
+
+## Manual QA Checklist
+
+| Scenario | Test Steps | Expected Behavior |
+|----------|-----------|-------------------|
+| **Offline (no network)** | Disconnect network, open extension | Shows "Offline" status if Ollama is also unreachable; cached summaries still display instantly |
+| **Slow network** | Throttle to 2G in DevTools, send cloud query | Streaming works progressively; timeout error after 60s with Retry action |
+| **Ollama not running** | Stop Ollama, click extension | Shows "Runtime Not Found" panel with download link and "Use Cloud" button |
+| **Model not pulled** | Run Ollama without the model, click extension | Shows "Model Not Installed" panel with `ollama pull` command |
+| **Huge page (50,000+ chars)** | Open a very long Wikipedia article | Scraper truncates to 6000 chars with `[...truncated...]` markers; no UI lag |
+| **SPA navigation** | Open a React/Next.js app, navigate between pages | URL change detected; context invalidated; "Page changed" notice shown |
+| **Dark-mode host with aggressive CSS** | Open a site with `* { color: white !important }` | Shadow DOM isolation prevents leakage; drawer renders correctly |
+| **CSP-strict site** | Open a site with strict CSP headers | Content script runs in isolated world; dynamic imports resolve to extension origin |
+| **Cancel mid-stream** | Click Stop during AI response | Stream aborted immediately; partial response preserved |
+| **Rapid messages** | Send 5 messages quickly | Each queued and processed in order; typewriter queue doesn't skip |
+| **Escape key** | Press Escape while drawer is open | Drawer closes; focus returns to FAB |
+| **Keyboard navigation** | Tab to FAB, Enter to open, Tab through UI | All interactive elements focusable; visible focus rings |
+| **Dark mode** | Toggle OS dark mode | Both popup and drawer switch themes via `prefers-color-scheme` |
+| **Reduced motion** | Enable reduced motion in OS settings | All animations and transitions disabled |
+| **Cache hit** | Summarize a page, close popup, reopen | Cached summary renders instantly with "Cached" label |
+| **Cache invalidation** | Edit a page's content, re-summarize | New content hash differs; fresh summary generated |
+
+---
+
+## Project Structure
+
+```
+├── manifest.json              # MV3 manifest
+├── background.js              # Service worker (all network I/O)
+├── content.js                 # FAB + Shadow DOM drawer
+├── popup.html / .css / .js    # Extension popup
+├── src/
+│   ├── core/
+│   │   ├── config.js          # Endpoints, model tags, limits
+│   │   ├── router.js          # Intent classification (pure function)
+│   │   ├── scraper.js         # DOM extraction and chunking
+│   │   ├── stream-parsers.js  # NDJSON + SSE async iterators
+│   │   ├── cache.js           # chrome.storage.local summary cache
+│   │   └── health.js          # Ollama runtime health check
+│   └── ui/
+│       ├── dom.js             # Safe DOM construction helper
+│       ├── widgets.js         # Widget renderers (map, link_card)
+│       ├── chat-controller.js # Shared chat session logic
+│       └── drawer.css         # Shadow DOM styles
+├── tests/
+│   └── router.test.js         # 30 table-driven intent classifier tests
+└── assets/
+    └── icons/                 # Extension icons (16, 48, 128)
 ```
 
-### Other endpoints
-
-- `GET /healthz`: liveness (unauthenticated, no secrets)
-- `GET /readyz`: checks model, search, and geo provider reachability
-
-### Tools exposed to the cloud model
-
-| Tool | Signature | Behavior |
-|---|---|---|
-| A | `lookup_location_map(location_name, city_context?)` | Geocodes, scores candidates, returns `ok` or `ambiguous` (never guesses on low confidence) |
-| B | `fetch_verified_link(query)` | Searches, applies URL policy (https only, SSRF filters, tracker stripping), sets `verified` by domain-match rule |
-
 ---
 
-## Routing rules
+## License
 
-The extension uses a pure, unit-tested regex router (`router.js`). Matching is case-insensitive with word boundaries.
-
-**Routes to cloud:** `map`, `location`, `coordinates`, `near` / `nearby`, `directions`, `find website`, `official site/link/page`, `book` / `booking` / `reserve`, `buy` / `purchase` / `order`, `price of`, `where is`.
-
-**Routes to local:** everything else, including summaries and questions about the current page.
-
-Edge cases:
-
-- Local runtime unavailable → cloud (with a one-time notice).
-- Cloud not configured and the intent is cloud-only → the user is told what is missing; the query is **not** silently sent to the local model.
-- False positives such as "the book I read" are covered by tests in `extension/tests/router.test.js`.
-
----
-
-## Permissions
-
-| Permission | Why it is needed |
-|---|---|
-| `activeTab` | Read the current page's text only after the user interacts with the extension |
-| `scripting` | Inject or message the content script for on-demand extraction |
-| `storage` | Cache summaries and store settings and the API token |
-| Host: `http://localhost:11434/*`, `http://127.0.0.1:11434/*` | Talk to the local Ollama runtime from the service worker |
-| Host: your cloud API origin | Call the cloud agent from the service worker |
-
-**Trade-off:** a floating button on every page requires a content script with `<all_urls>` matching, which triggers a broad host-permission warning at install. A config flag switches to on-demand injection via `chrome.scripting.executeScript` after the user clicks the toolbar icon, which avoids the broad warning but removes the always-on FAB.
-
----
-
-## Security model
-
-**Extension**
-
-- MV3 with a strict CSP: `script-src 'self'; object-src 'self'`.
-- No `eval`, `new Function`, inline scripts/handlers, CDN scripts, or `innerHTML`/`outerHTML`/`insertAdjacentHTML`.
-- Chat UI lives in a **closed Shadow DOM** so host-page CSS cannot affect it and page scripts cannot reach its internals.
-- All model output is rendered with `textContent`. Links are parsed with `new URL()`, restricted to `https:` (plus localhost in dev), and opened with `rel="noopener noreferrer"`.
-- Page text is passed to models inside delimited tags and marked as untrusted data to mitigate prompt injection.
-
-**Server**
-
-- Constant-time bearer-token comparison against hashed tokens; CORS allowlist limited to your extension origin.
-- Per-token and per-IP rate limiting with `Retry-After`.
-- Strict Zod validation on every request; body size limit of 64 KB.
-- SSRF defenses in the URL policy (no IP literals, localhost, private/link-local ranges; DNS-resolution checks for any server-side fetch).
-- Widgets are resolved from stored tool results by id; forged ids or model-authored URLs are dropped.
-- Timeouts everywhere, circuit breakers per provider, abort upstream calls on client disconnect, SSE heartbeats every 15 s.
-- Logs are structured with request ids; page text and user messages are not logged at `info` level.
-
----
-
-## Privacy and data flow
-
-| Route | What leaves your device | Where it goes |
-|---|---|---|
-| Local | Nothing | Stays on `localhost` (Ollama) |
-| Cloud | The user's message, recent chat turns, and the cleaned, truncated page text (max 6,000 chars) | Your cloud agent server, then your model provider and, for tool calls, the search/geo providers |
-
-- Cloud routing happens **only** when a prompt matches a cloud intent (or local is unavailable and fallback is on), and the UI shows a "🌐 Cloud Syncing" badge whenever it does.
-- The server does not persist conversations or page content by default.
-- Summaries are cached locally in `chrome.storage.local` keyed by normalized URL (24 h TTL, 50-entry cap) and never uploaded.
-
----
-
-## Testing
-
-```bash
-# Extension: router unit tests (plain Node assert)
-cd extension && node tests/router.test.js
-
-# Server: unit + integration tests
-cd server && npm test
-```
-
-Server coverage includes URL-policy/SSRF cases, envelope validation and repair, widget resolver rejecting forged ids, geo ambiguity handling, rate limiting, and an end-to-end SSE test with a mocked model client.
-
-**Manual QA checklist**
-
-- [ ] Ollama stopped → download prompt or cloud fallback appears
-- [ ] Model tag missing → `ollama pull <tag>` instructions shown
-- [ ] Slow or offline network → timeout error with Retry
-- [ ] Very large page → truncated to ≤ 6,000 chars with marker
-- [ ] SPA navigation → context refreshes when the URL changes
-- [ ] Host pages with aggressive global CSS → drawer unaffected
-- [ ] Strict-CSP sites (e.g., GitHub) → FAB and drawer still work
-- [ ] Reopen on the same URL → cached summary renders instantly with "cached" label
-- [ ] Stop button / closing the panel aborts the stream
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause and fix |
-|---|---|
-| Health check says runtime is down | Ollama not running, or `OLLAMA_ORIGINS` not set and Ollama not restarted |
-| `403` from Ollama | `OLLAMA_ORIGINS` doesn't include `chrome-extension://*` |
-| "Model missing" | The configured tag isn't in `ollama list`; pull it or fix the setting |
-| Cloud `401` | Token not set in the extension, or its hash is missing from `API_TOKENS_HASHED` |
-| Cloud CORS error | Extension ID not in `ALLOWED_EXTENSION_IDS` (the ID changes if you reload from a different folder) |
-| Stream stops mid-response | Reverse proxy buffering SSE; disable buffering (e.g., `X-Accel-Buffering: no`) |
-| Drawer not appearing on some pages | Restricted pages (`chrome://`, Web Store) block content scripts by design |
-| Map widget shows no tiles | By design: maps render as a static card with an OpenStreetMap link, since external frames and tiles are avoided for CSP/review reasons |
-
----
-
-## Chrome Web Store checklist
-
-- [ ] Single-purpose description: "Summarize and chat about the page you're viewing."
-- [ ] Permission justification text matches the [Permissions](#permissions) table
-- [ ] Data-use disclosure states what is sent to the cloud, when, and why
-- [ ] Privacy policy URL published (no sale of data; no persistence on the server by default)
-- [ ] No remotely hosted code; all scripts are packaged
-- [ ] Icons (16/48/128), screenshots, and promo tile prepared
-- [ ] Tested on a clean Chrome profile with local runtime absent and cloud configured
-
----
-
-## Roadmap
-
-- WebLLM in-browser fallback when Ollama is not installed
-- Options page for per-site enable/disable
-- Selection-based "explain this" context menu
-- Per-user API keys and usage dashboards on the server
-- Optional incremental JSON-field streaming to reduce cloud time-to-first-token
-
----
-
-HAPPY LEARNING!
+MIT
