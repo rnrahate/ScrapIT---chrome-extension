@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=360">
+  <title>Gemma Web Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- All DOM is hydrated by popup.js using safe createElement calls.
+       This file only contains the semantic skeleton structure.
+       No inline JS, no inline CSS, no inline event handlers. -->
+
+  <div id="popup-root">
+    <header id="popup-header">
+      <h1 id="popup-title">Gemma Companion</h1>
+      <span id="popup-status" class="status-chip"></span>
+    </header>
+
+    <!-- Runtime-down panel (hidden by default) -->
+    <div id="panel-runtime-down" class="panel" hidden>
+      <!-- populated by popup.js -->
+    </div>
+
+    <!-- Model-missing panel (hidden by default) -->
+    <div id="panel-model-missing" class="panel" hidden>
+      <!-- populated by popup.js -->
+    </div>
+
+    <!-- Main chat interface -->
+    <div id="panel-main">
+      <div id="quick-actions"></div>
+      <div id="output-viewport" class="output-viewport" role="log" aria-live="polite" aria-label="AI output"></div>
+      <div id="input-bar" class="input-bar">
+        <input id="chat-input" type="text" placeholder="Ask about this page…" autocomplete="off" aria-label="Message input">
+        <button id="send-btn" class="btn-send" aria-label="Send message">Send</button>
+        <button id="stop-btn" class="btn-stop" hidden aria-label="Stop generation">Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
